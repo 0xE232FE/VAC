@@ -27,7 +27,8 @@ BOOL Utils_heapFree(LPVOID);
 VOID Utils_initializeMD5(DWORD*);
 
 // E8 ? ? ? ? 6A 58 (relative jump)
-PBYTE Utils_memcpy(PVOID, PVOID, INT);
+// E8 ? ? ? ? 6A 04 (relative jump)
+PBYTE Utils_memcpy(PVOID dest, LPCVOID src, INT size);
 
 // 8B 4C 24 0C 85 C9
 PBYTE Utils_memset(PBYTE, INT, INT);
@@ -270,6 +271,9 @@ BOOLEAN Utils_getSystemInformation(VOID);
 // A1 ? ? ? ? 53 56
 int Utils_wideCharToMultiByte(LPCWCH, LPSTR);
 
+// A1 ? ? ? ? 53
+int Utils_wideCharToMultiByteN(LPCWCH wideCharStr, LPSTR multiByteStr, INT count);
+
 // E8 ? ? ? ? 59 B0 01 (relative jump)
 VOID Utils_copyStringW2(PWSTR, PCWSTR);
 
@@ -303,3 +307,6 @@ INT Utils_enumProcesses(DWORD[500], DWORD[500]);
 
 // 83 EC 2C
 INT Utils_getSystemHandles(DWORD[500], INT, INT, DWORD*, DWORD*, DWORD*);
+
+// B8 ? ? ? ? 85 D2
+INT Utils_hash(PCSTR str, INT count);
