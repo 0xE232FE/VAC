@@ -5,34 +5,37 @@ This repository contains parts of source code of Valve Anti-Cheat recreated from
 Valve Anti-Cheat (VAC) is user-mode noninvasive anti-cheat system developed by Valve. It is delivered in form of modules (dlls) streamed from remote server. `steamservice.dll` handles module loading.
 
 ## Modules
-| ID | Purpose | Timestamp (UTC) |
-| --- | --- | --- |
-| 1 | | Mon Mar 18 18:55:25 2019 |
-| 2 | | Mon Mar 18 18:52:35 2019 |
-| 3 | | Mon Mar 18 19:37:52 2019 |
-| 4 | | Mon Mar 18 19:07:44 2019 |
-| 5 | | Mon Mar 18 19:06:04 2019 |
-| 6 | | Mon Mar 18 18:03:28 2019 |
-| 7 | | Mon Mar 18 19:10:14 2019 |
-| 8 | | Mon Mar 18 18:47:55 2019 |
-| 9 | | Mon Mar 18 18:55:45 2019 |
-| 10 | | Mon Mar 18 19:26:53 2019 |
-| 11 | | Mon Mar 18 19:28:33 2019 |
-| 12 | | Mon Mar 18 19:06:54 2019 |
-| 13 | | Mon Mar 18 18:18:27 2019 |
-| 14 | | Mon Mar 18 18:52:25 2019 |
-| 15 | | Mon Mar 18 19:22:23 2019 |
-| 16 | | Mon Mar 18 19:06:04 2019 |
-| 17 | | Mon Mar 18 19:09:54 2019 |
-| 18 | | Mon Mar 18 20:14:40 2019 |
-| 19 | | Mon Mar 18 19:41:32 2019 |
-| 20 | | Mon Mar 18 19:41:42 2019 |
-| 21 | Enumerate running kernel mode and file system drivers services | Mon Mar 18 19:23:53 2019 |
-| 22 | Get file information (volume serial number and file index) of specific driver requested by VAC server | Mon Mar 18 19:25:33 2019 |
+| ID | Purpose | .text section raw size | Source folder |
+| --- | --- | --- | --- |
+| 1 | Collect information about system configuration.<br>This module is loaded first and sometimes even before any VAC-secured game is launched. | 0x5C00 | Modules/SystemInfo
 
-## Encryption / hashing
+## Encryption / Hashing
 VAC uses several encryption / hashing methods:
 - MD5 - hashing data read from process memory
 - ICE - decryption of imported functions names and encryption of scan results
 - CRC32 - hashing table of WinAPI functions addresses
-- Xor - encryption of function names on stack, e.g `NtQuerySystemInformation`. Strings are xor-ed with `^` or `>` chars.
+- Xor - encryption of function names on stack, e.g `NtQuerySystemInformation`. Strings are xor-ed with `^` or `>` or `&` char.
+
+## Module Description
+
+### #1 - SystemInfo
+This module is loaded first and sometimes even before any VAC-secured game is launched.
+
+The module calls `GetNativeSystemInfo` function and reads fields from resultant [`SYSTEM_INFO`](https://docs.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-system_info) struct:
+- wProcessorArchitecture
+- dwProcessorType
+
+Then it calls [`NtQuerySystemInformation`](https://docs.microsoft.com/en-us/windows/win32/api/winternl/nf-winternl-ntquerysysteminformation) API function with following `SystemInformationClass` values (in order they appear in code):
+- SystemTimeOfDayInformation - returns undocumented [`SYSTEM_TIMEOFDAY_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/timeofday.htm) struct, VAC uses two fields:
+    - LARGE_INTEGER CurrentTime
+    - LARGE_INTEGER BootTime
+- SystemCodeIntegrityInformation - returns [`SYSTEM_CODEINTEGRITY_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/codeintegrity.htm), module saves `CodeIntegrityOptions` field
+- SystemDeviceInformation - returns [`SYSTEM_DEVICE_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/device.htm), module saves `NumberOfDisks` field
+- SystemKernelDebuggerInformation - returns [`SYSTEM_KERNEL_DEBUGGER_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/kernel_debugger.htm), VAC uses whole struct
+- SystemBootEnvironmentInformation - returns [`SYSTEM_BOOT_ENVIRONMENT_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/boot_environment.htm), VAC copies `BootIdentifier` GUID
+- SystemRangeStartInformation - returns `SYSTEM_RANGE_START_INFORMATION` which is just `void*`
+
+For more information about `SYSTEM_INFORMATION_CLASS` enum see [Geoff Chappell's page](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/class.htm).
+
+Next, anti-cheat calls [`GetProcessImageFileNameA`](https://docs.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getprocessimagefilenamea) function to retrieve path of current executable and **reads last 36 characters** (e.g. `\Program Files (x86)\Steam\Steam.exe`)
+.
