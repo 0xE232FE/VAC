@@ -47,6 +47,7 @@ DWORD(WINAPI* getProcessImageFileNameA)(HANDLE, LPSTR, DWORD);
 // 55 8B EC B8
 INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataSize)
 {
+    WCHAR ntDllWide[] = L"\x68\x52\x62\x4A\x4A\x8\x42\x4A\x4A";
     CHAR ntDll[] = "\x68\x52\x62\x4A\x4A\x8\x42\x4A\x4A";
     CHAR kernel32[] = "\x6D\x43\x54\x48\x43\x4A\x15\x14\x8\x42\x4A\x4A";
     CHAR ntQuerySystemInformation[] = "\x68\x52\x77\x53\x43\x54\x5F\x75\x5F\x55\x52\x43\x4B\x6F\x48\x40\x49\x54\x4B\x47\x52\x4F\x49\x48";
@@ -54,7 +55,15 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
     CHAR getNativeSystemInfo[] = "\x61\x43\x52\x68\x47\x52\x4F\x50\x43\x75\x5F\x55\x52\x43\x4B\x6F\x48\x40\x49";
     CHAR wow64EnableWow64FsRedirection[] = "\x71\x49\x51\x10\x12\x63\x48\x47\x44\x4A\x43\x71\x49\x51\x10\x12\x60\x55\x74\x43\x42\x4F\x54\x43\x45\x52\x4F\x49\x48";
 
+    Utils_memset(data, 0, 2048);
     *dataSize = 2048;
+    data[4] = 0xA93E4B10;
+
+    PWCHAR currW = ntDllWide;
+    while (*currW) {
+        *currW ^= L'&';
+        ++currW;
+    }
 
     PCHAR curr = ntDll;
     while (*curr) {
@@ -111,32 +120,40 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
                         BOOLEAN(WINAPI* _wow64EnableWow64FsRedirection)(BOOLEAN) = (PVOID)winApi.GetProcAddress(_kernel32, wow64EnableWow64FsRedirection);
 
                         data[18] = _getVersion();
+
                         SYSTEM_INFO si;
                         _getNativeSystemInfo(&si);
                         data[20] = si.wProcessorArchitecture;
                         data[21] = si.dwProcessorType;
+
                         SYSTEM_TIMEOFDAY_INFORMATION_ sti;
                         data[6] = _ntQuerySystemInformation(SystemTimeOfDayInformation, &sti, sizeof(sti), NULL);
                         data[14] = sti.CurrentTime.LowPart;
                         data[15] = sti.CurrentTime.HighPart;
                         data[16] = sti.BootTime.LowPart;
                         data[17] = sti.BootTime.HighPart;
+
                         SYSTEM_CODEINTEGRITY_INFORMATION sci;
                         sci.Length = sizeof(sci);
                         data[7] = _ntQuerySystemInformation(SystemCodeIntegrityInformation, &sci, sizeof(sci), NULL);
                         data[19] = sci.CodeIntegrityOptions;
+
                         SYSTEM_DEVICE_INFORMATION sdi;
                         data[22] = _ntQuerySystemInformation(SystemDeviceInformation, &sdi, sizeof(sdi), NULL);
                         data[26] = sdi.NumberOfDisks;
+
                         SYSTEM_KERNEL_DEBUGGER_INFORMATION skdi;
                         data[23] = _ntQuerySystemInformation(SystemKernelDebuggerInformation, &skdi, sizeof(skdi), NULL);
                         *((PSYSTEM_KERNEL_DEBUGGER_INFORMATION)&data[27]) = skdi;
+
                         SYSTEM_BOOT_ENVIRONMENT_INFORMATION sbei;
                         Utils_memset(&sbei, 0, sizeof(sbei));
                         data[24] = _ntQuerySystemInformation(SystemBootEnvironmentInformation, &sbei, sizeof(sbei), NULL);
                         Utils_memcpy(&data[28], &sbei.BootIdentifier, sizeof(sbei.BootIdentifier));
+
                         SYSTEM_RANGE_START_INFORMATION srsi;
                         data[25] = _ntQuerySystemInformation(SystemRangeStartInformation, &srsi, sizeof(srsi), NULL);
+                        data[32] = srsi.SystemRangeStart;
                         data[34] = winApi.GetCurrentProcessId();
                         data[35] = winApi.GetCurrentThreadId();
                         data[36] = ERROR_FUNCTION_NOT_CALLED;
@@ -159,6 +176,59 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
                        
                         if (systemDirLen) {
                             Utils_wideCharToMultiByte(systemDir, &data[106]);
+
+                            DWORD systemVolumeSerial = 0;
+                            LARGE_INTEGER systemFolderId = { 0 };
+
+                            if (SystemInfo_getFileInfo(systemDir, &systemVolumeSerial, &systemFolderId)) {
+                                data[156] = systemFolderId.LowPart;
+                                data[157] = systemFolderId.HighPart;
+                                data[158] = systemVolumeSerial;
+                            } else {
+                                data[159] = winApi.GetLastError();
+                            }
+
+                            systemDir[systemDirLen] = L'\\';
+                            Utils_memcpy(systemDir[systemDirLen + 1], ntDllWide, sizeof(ntDllWide));
+
+                            BOOLEAN fsRedirDisabled = FALSE;
+                            if (_wow64EnableWow64FsRedirection)
+                                fsRedirDisabled = _wow64EnableWow64FsRedirection(FALSE);
+
+                            HANDLE ntdllHandle = winApi.CreateFileW(systemDir, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+                            DWORD ntdllOpenErr = winApi.GetLastError();
+
+                            if (fsRedirDisabled)
+                                _wow64EnableWow64FsRedirection(TRUE);
+                            
+                            if (ntdllHandle != INVALID_HANDLE_VALUE) {
+                               // read ntdll.dll file and do some processing
+                            } else {
+                                data[46] = ntdllOpenErr;
+                            }
+
+                            WCHAR windowsDir[MAX_PATH];
+
+                            if (winApi.GetWindowsDirectoryW(windowsDir, sizeof(windowsDir))) {
+                                Utils_wideCharToMultiByte(windowsDir, &data[52]);
+
+                                DWORD windowsVolumeSerial = 0;
+                                LARGE_INTEGER windowsFolderId = { 0 };
+
+                                if (SystemInfo_getFileInfo(systemDir, &windowsVolumeSerial, &windowsFolderId)) {
+                                    data[102] = windowsFolderId.LowPart;
+                                    data[103] = windowsFolderId.HighPart;
+                                    data[104] = windowsVolumeSerial;
+                                } else {
+                                    data[105] = winApi.GetLastError();
+                                }
+                                data[180] = moduleHandlesCount;
+                                data[181] = winapiFunctionsCount;
+                                Utils_memcpy(&data[182], moduleHandles, sizeof(moduleHandles) /* == 64 */);
+                                Utils_memcpy(&data[198], &winApi, 640);
+                            } else {
+                                data[105] = data[46] = winApi.GetLastError();
+                            }
                         } else {
                             data[159] = data[46] = winApi.GetLastError();
                         }
@@ -179,10 +249,32 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
 }
 
 // 55 8D 6C 24 90
-BOOLEAN SystemInfo_getFileInfo(PCWSTR fileName, DWORD* volumeSerialNumber, DWORD fileIndex[2])
+BOOLEAN SystemInfo_getFileInfo(PCWSTR fileName, DWORD* volumeSerialNumber, PLARGE_INTEGER fileId)
 {
     if (!winApi.GetFileInformationByHandle)
         return FALSE;
 
+    HANDLE file = winApi.CreateFileW(fileName, READ_CONTROL | SYNCHRONIZE | FILE_READ_DATA | FILE_READ_EA | FILE_READ_ATTRIBUTES, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_SUPPORTS_USN_JOURNAL, NULL);
+
+    if (file == INVALID_HANDLE_VALUE || !winApi.GetFileInformationByHandleEx)
+        return FALSE;
+
+    FILE_ID_BOTH_DIR_INFO fileInfo;
+    Utils_memset(&fileInfo, 0, 132); // 132 while sizeof(FILE_ID_BOTH_DIR_INFO) = 112 ?
+    BOOL gotInfo = winApi.GetFileInformationByHandleEx(file, FileIdBothDirectoryInfo, &fileInfo, 132);
+    *volumeSerialNumber = 0;
+
+    if (gotInfo && winApi.GetVolumeInformationByHandleW)
+        winApi.GetVolumeInformationByHandleW(file, NULL, 0, volumeSerialNumber, NULL, NULL, NULL, 0);
+
+    winApi.CloseHandle(file);
+
+    if (!gotInfo) {
+        winApi.GetLastError();
+        return 0;
+    }
+    
+    Utils_memcpy(&fileId->LowPart, &fileInfo.FileId.LowPart, sizeof(DWORD));
+    Utils_memcpy(&fileId->HighPart, &fileInfo.FileId.HighPart, sizeof(LONG));
     return TRUE;
 }
