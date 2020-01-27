@@ -1,6 +1,7 @@
 #include "../../Utils.h"
 #include "SystemInfo.h"
 
+#include <intrin.h>
 #include <winternl.h>
 
 typedef struct _SYSTEM_TIMEOFDAY_INFORMATION_ {
@@ -154,6 +155,7 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
                         SYSTEM_RANGE_START_INFORMATION srsi;
                         data[25] = _ntQuerySystemInformation(SystemRangeStartInformation, &srsi, sizeof(srsi), NULL);
                         data[32] = srsi.SystemRangeStart;
+                        data[33] = (INT)srsi.SystemRangeStart >> 31;
                         data[34] = winApi.GetCurrentProcessId();
                         data[35] = winApi.GetCurrentThreadId();
                         data[36] = ERROR_FUNCTION_NOT_CALLED;
@@ -215,7 +217,7 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
                                 DWORD windowsVolumeSerial = 0;
                                 LARGE_INTEGER windowsFolderId = { 0 };
 
-                                if (SystemInfo_getFileInfo(systemDir, &windowsVolumeSerial, &windowsFolderId)) {
+                                if (SystemInfo_getFileInfo(windowsDir, &windowsVolumeSerial, &windowsFolderId)) {
                                     data[102] = windowsFolderId.LowPart;
                                     data[103] = windowsFolderId.HighPart;
                                     data[104] = windowsVolumeSerial;
@@ -226,6 +228,28 @@ INT SystemInfo_collectData(PVOID unk, PVOID unk1, DWORD data[2048], PDWORD dataS
                                 data[181] = winapiFunctionsCount;
                                 Utils_memcpy(&data[182], moduleHandles, sizeof(moduleHandles) /* == 64 */);
                                 Utils_memcpy(&data[198], &winApi, 640);
+                                data[358] = (DWORD)_ReturnAddress() & 0xFFFF0000;
+                                data[359] = *(DWORD*)((DWORD)_ReturnAddress() & 0xFFFF0000);
+                                data[360] = *(DWORD*)((DWORD)_ReturnAddress() & 0xFFFF0000 + 0x114);
+                                data[361] = *(DWORD*)((DWORD)_ReturnAddress() & 0xFFFF0000 + 0x400);
+                                data[363] = SystemInfo_enumVolumes((VolumeData*)&data[364]);
+
+                                DWORD gamePid = *((DWORD*)unk1 + 24);
+                                data[444] = gamePid;
+
+                                if (gamePid) {
+                                    HANDLE gameHandle = winApi.OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, gamePid);
+
+                                    if (gameHandle && gameHandle != INVALID_HANDLE_VALUE) {
+                                        data[445] = gameHandle;
+                                        data[446] = 0;
+                                        data[447] = winApi.GetProcessId(gameHandle);
+                                        winApi.CloseHandle(gameHandle);
+                                    } else {
+                                        data[445] = 0;
+                                        data[446] = winApi.GetLastError();
+                                    }
+                                }
                             } else {
                                 data[105] = data[46] = winApi.GetLastError();
                             }
@@ -277,4 +301,65 @@ BOOLEAN SystemInfo_getFileInfo(PCWSTR fileName, DWORD* volumeSerialNumber, PLARG
     Utils_memcpy(&fileId->LowPart, &fileInfo.FileId.LowPart, sizeof(DWORD));
     Utils_memcpy(&fileId->HighPart, &fileInfo.FileId.HighPart, sizeof(LONG));
     return TRUE;
+}
+
+// E8 ? ? ? ? 89 86
+INT SystemInfo_enumVolumes(VolumeData volumes[10])
+{
+    INT volCount = 0;
+
+    // if (!dword_10008D68)
+    //     return 0;
+
+    WCHAR volGuid[MAX_PATH] = { 0 };
+
+    HANDLE vol = winApi.FindFirstVolumeW(volGuid, MAX_PATH);
+
+    if (vol == INVALID_HANDLE_VALUE) {
+        VolumeData volData = { 0 };
+        winApi.GetLastError();
+        return 0;
+    }
+
+    if (!winApi.GetVolumeInformationW || !winApi.GetDriveTypeW || !winApi.GetVolumePathNamesForVolumeNameW)
+        return 0;
+
+    do {
+        VolumeData volData = { 0 };
+        volData.volumeGuidHash = Utils_hash(volGuid, lstrlenW(volGuid));
+
+        DWORD volSerialNumber = 0, fileSystemFlags = 0;
+        WCHAR volName[50], fileSystemName[50];
+
+        if (winApi.GetVolumeInformationW(volGuid, volName, 50, &volSerialNumber, NULL, &fileSystemFlags, fileSystemName, 50)) {
+            volData.fileSystemFlags = fileSystemFlags;
+            volData.volumeSerialNumber = volSerialNumber;
+            volData.volumeNameHash = Utils_hash(volName, lstrlenW(volName));
+            volData.fileSystemNameHash = Utils_hash(fileSystemName, lstrlenW(fileSystemName));
+        } else {
+            volData.getVolumeInformationError = winApi.GetLastError();
+        }
+        volData.driveType = winApi.GetDriveTypeW(vol);
+
+        WCHAR volPathName[50];
+        DWORD volPathNameLen;
+        UINT volPathNameHash;
+
+        if (winApi.GetVolumePathNamesForVolumeNameW(volGuid, volPathName, 50, &volPathNameLen)) {
+            volData.volumePathNameLength = volPathNameLen;
+            volPathNameHash = Utils_hash(volPathName, lstrlenW(volPathName));
+        } else {
+            volData.volumePathNameLength = 0;
+            volPathNameHash = winApi.GetLastError();
+        }
+
+        volData.volumePathNameHash = volPathNameHash;
+
+        if (volCount < 10)
+            volumes[volCount] = volData;
+
+        ++volCount;
+    } while (winApi.FindNextVolumeW(vol, volGuid, MAX_PATH));
+    winApi.FindVolumeClose(vol);
+    return volCount;
 }

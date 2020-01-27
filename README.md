@@ -9,6 +9,7 @@ Valve Anti-Cheat (VAC) is user-mode noninvasive anti-cheat system developed by V
 | --- | --- | --- | --- |
 | 1 | Collect information about system configuration.<br>This module is loaded first and sometimes even before any VAC-secured game is launched. | 0x5C00 | Modules/SystemInfo
 | 2 | Enumerate running processes and handles.<br>This module is loaded shortly after game is launched but also repeatedly later. | 0x4A00 | Modules/ProcessHandleList
+| 3 | Collect `VacProcessMonitor` data from filemapping created by `steamservice.dll` | 0x6600 | Modules/ProcessMonitor
 
 ## Encryption / Hashing
 VAC uses several encryption / hashing methods:
@@ -38,7 +39,7 @@ Then it calls [`NtQuerySystemInformation`](https://docs.microsoft.com/en-us/wind
 - SystemDeviceInformation - returns [`SYSTEM_DEVICE_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/device.htm), module saves `NumberOfDisks` field
 - SystemKernelDebuggerInformation - returns [`SYSTEM_KERNEL_DEBUGGER_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/kernel_debugger.htm), VAC uses whole struct
 - SystemBootEnvironmentInformation - returns [`SYSTEM_BOOT_ENVIRONMENT_INFORMATION`](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/boot_environment.htm), VAC copies `BootIdentifier` GUID
-- SystemRangeStartInformation - returns `SYSTEM_RANGE_START_INFORMATION` which is just `void*`
+- SystemRangeStartInformation - returns `SYSTEM_RANGE_START_INFORMATION` which is just `void*`. Anti-cheat saves returned **kernel space start address** and **sign bit** of that address (to check if executable inside which VAC is running is linked with [`LARGEADDRESSAWARE`](https://docs.microsoft.com/en-us/cpp/build/reference/largeaddressaware-handle-large-addresses) option)
 
 For more information about `SYSTEM_INFORMATION_CLASS` enum see [Geoff Chappell's page](https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/sysinfo/class.htm).
 
@@ -49,6 +50,31 @@ Anti-cheat queries folder FileID (using [`GetFileInformationByHandleEx`](https:/
 
 Module reads `NtDll.dll` file from **system directory** and does some processing on it (not reversed yet).
 
-VAC saves **handles (base addresses) of imported system dlls** (max 16, this VAC module loads 12 dlls) and **pointers to WINAPI functions** (max 160, module uses 172 functions‬). This is done to detect **import address table hooking**, if **function address** is lower than corresponding **module base**, function has been hooked.
+VAC saves **handles (base addresses) of imported system dlls** (max 16, this VAC module loads 12 dlls) and **pointers to WINAPI functions** (max 160, module uses 172 functions‬). This is done to detect **import address table hooking** on anti-cheat module, if **function address** is lower than corresponding **module base**, function has been hooked.
+
+Anti-cheat gets self **module base** by performing **bitwise and** on **return address** (`_ReturnAddress() & 0xFFFF0000`). Then it collects:
+- module base address
+- first four bytes at module base address (from DOS header)
+- DWORD at **module base + 0x114**
+- DWORD at **module base + 0x400** (start of .text section)
+
+Next it enumerates **volumes** using `FindFirstVolumeW` / `FindNextVolumeW` API. VAC queries volume information by calling `GetVolumeInformationW`, `GetDriveTypeW` and `GetVolumePathNamesForVolumeNameW` functions and fills following struct with collected data:
+
+```cpp
+struct VolumeData {
+    UINT volumeGuidHash;
+    DWORD getVolumeInformationError;
+    DWORD fileSystemFlags;
+    DWORD volumeSerialNumber;
+    UINT volumeNameHash;
+    UINT fileSystemNameHash;
+    WORD driveType;
+    WORD volumePathNameLength;
+    DWORD volumePathNameHash;
+}; // sizeof(VolumeData) == 32
+```
+VAC gathers data of max. 10 volumes.
+
+If this module was streamed after VAC-secured game had started, it attemps to get handle to the game process (using `OpenProcess` API).
 
 Eventually, module encrypts data (2048 bytes), DWORD by DWORD XORing with key received from server (e.g 0x1D4855D3)
